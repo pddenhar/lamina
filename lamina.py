@@ -6,10 +6,12 @@ import inspect
 from functools import wraps
 import os, shutil, glob
 import logging
+import FSops
 
 logging.basicConfig(format='%(levelname)s:%(filename)s:%(lineno)s %(message)s',level=logging.DEBUG)
 LAMINA_DIRECTORY = "/var/lib/lamina/"
 LAYERS_DIRECTORY = LAMINA_DIRECTORY + "layers/"
+MOUNT_DIRECTORY = LAMINA_DIRECTORY + "mounts/"
 
 """Add a .kwargified attribute to a method that accepts an argparse namespace as the kwargs for a method"""
 def kwargify(method):
@@ -49,8 +51,12 @@ def create(name, parent=None):
 @kwargify
 def delete(name):
     layer_children = children(name)
+    if len(layer_children) != 0:
+        if (raw_input("Layer {0} has {1} children, are you sure you want to delete it? (y/n) ".format(name,len(layer_children))) != 'y'):
+            return False
     for child in layer_children:
-        delete(child)
+        if delete(child) == False:
+            return False
 
     layerdir = LAYERS_DIRECTORY+name
     manifest_path = LAYERS_DIRECTORY+name+".parents"
@@ -62,9 +68,37 @@ def delete(name):
     logging.info("Deleted "+name)
 
 @kwargify
-def list_images():
+def list_layers():
+    def printChildren(name, indent):
+        print(' '*indent, end="")
+        print(name)
+        for child in children(name):
+            printChildren(child, indent+2)
+    
     manifests = glob.glob(LAYERS_DIRECTORY+"*.parents")
-    print(manifests)
+    for manifest in manifests:
+        with open(manifest, 'r') as myfile:
+            data=myfile.read().replace('\n', '').strip()
+            if(len(data)==0):
+                printChildren(os.path.splitext(os.path.basename(manifest))[0],0)
+
+@kwargify
+def mount_layer(name):
+    mount_path=FSops.mount_layer(name, LAYERS_DIRECTORY, "/mnt/")
+    print("Layer mounted at {0}".format(mount_path))
+
+@kwargify
+def unmount_layer(name):
+    FSops.unmount_layer(name)
+
+@kwargify
+def run_command(name, command, args):
+    mount_location = FSops.prep_chroot(name, LAYERS_DIRECTORY, MOUNT_DIRECTORY)
+    chroot_command = "chroot {0} {1} {2}".format(mount_location, command, " ".join(args))
+    os.system(chroot_command)
+    FSops.cleanup_chroot(name)
+    
+        
 
 """Return a list of direct children for layer name"""
 def children(name):
@@ -96,7 +130,21 @@ if __name__ == "__main__":
     parser_delete.set_defaults(func=delete)
 
     parser_list = subparsers.add_parser('list', help='List all lamina layers')
-    parser_list.set_defaults(func=list_images)
+    parser_list.set_defaults(func=list_layers)
+
+    parser_run = subparsers.add_parser('run', help='Run a command on a lamina layer')
+    parser_run.add_argument('name', help='lamina layer name to run command in')
+    parser_run.add_argument('command', help='command to run')
+    parser_run.add_argument('args', help='arguments for command', nargs=argparse.REMAINDER)
+    parser_run.set_defaults(func=run_command)
+
+    parser_mount = subparsers.add_parser('mount', help='Mount a lamina layer so that you can modify it directly')
+    parser_mount.add_argument('name', help='lamina layer name to mount')
+    parser_mount.set_defaults(func=mount_layer)
+
+    parser_unmount = subparsers.add_parser('unmount', help='Unmount a lamina layer')
+    parser_unmount.add_argument('name', help='lamina layer name to unmount')
+    parser_unmount.set_defaults(func=unmount_layer)
 
     args = parser.parse_args()
     args.func.kwargified(args)
